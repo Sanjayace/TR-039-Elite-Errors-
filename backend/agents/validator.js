@@ -1,78 +1,24 @@
 /**
  * Validator Agent
- * Performs static analysis on generated code.
- * Checks: syntax validity, common anti-patterns, missing error handling.
+ * Uses Gemini LLM to act as a universal code reviewer 
+ * capable of spotting syntax errors and anti-patterns in ANY language.
  */
+const { GoogleGenAI } = require('@google/genai');
 
-const vm = require('vm');
-
-function checkSyntax(code) {
+function extractJson(text) {
   try {
-    new vm.Script(code);
-    return { passed: true, error: null };
+    const codeBlockMatch = text.match(/```(?:json)?\n([\s\S]*?)```/);
+    if (codeBlockMatch) return JSON.parse(codeBlockMatch[1]);
+    
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    return { issues: [] };
   } catch (e) {
-    return { passed: false, error: e.message };
+    return { issues: [] };
   }
 }
 
-function checkAntiPatterns(code) {
-  const issues = [];
-
-  // Intentionally introduce occasional issues in generic scaffolds
-  if (code.includes('TODO:') && !code.includes('throw')) {
-    issues.push({
-      severity: 'warning',
-      line: findLineNumber(code, 'TODO:'),
-      message: 'TODO comment found — implementation incomplete',
-    });
-  }
-
-  if (/eval\s*\(/.test(code)) {
-    issues.push({
-      severity: 'error',
-      line: findLineNumber(code, 'eval('),
-      message: 'Use of eval() is unsafe and should be avoided',
-    });
-  }
-
-  if (/var\s+/.test(code)) {
-    issues.push({
-      severity: 'warning',
-      line: findLineNumber(code, 'var '),
-      message: 'Prefer const/let over var for block scoping',
-    });
-  }
-
-  if (!code.includes('throw') && !code.includes('try') && !code.includes('catch')) {
-    // Only flag if longer code without any error handling
-    if (code.split('\n').length > 12) {
-      issues.push({
-        severity: 'warning',
-        line: 1,
-        message: 'No error handling detected — consider adding try/catch or input guards',
-      });
-    }
-  }
-
-  if (/console\.log\(/.test(code) && code.match(/console\.log\(/g)?.length > 5) {
-    issues.push({
-      severity: 'info',
-      line: findLineNumber(code, 'console.log('),
-      message: 'Excessive console.log calls — remove before production',
-    });
-  }
-
-  return issues;
-}
-
-function findLineNumber(code, pattern) {
-  const lines = code.split('\n');
-  const idx = lines.findIndex(l => l.includes(pattern));
-  return idx === -1 ? 1 : idx + 1;
-}
-
-function computeQualityScore(syntaxOk, issues) {
-  if (!syntaxOk) return 0;
+function computeQualityScore(issues) {
   let score = 100;
   for (const issue of issues) {
     if (issue.severity === 'error') score -= 30;
@@ -83,33 +29,64 @@ function computeQualityScore(syntaxOk, issues) {
 }
 
 async function run(code) {
-  await new Promise(r => setTimeout(r, 600 + Math.random() * 500));
-
-  const syntaxResult = checkSyntax(code);
-  const antiPatternIssues = syntaxResult.passed ? checkAntiPatterns(code) : [];
-  const qualityScore = computeQualityScore(syntaxResult.passed, antiPatternIssues);
-  const passed = syntaxResult.passed && qualityScore >= 60;
-
-  const issues = [];
-  if (!syntaxResult.passed) {
-    issues.push({ severity: 'error', line: 1, message: `Syntax error: ${syntaxResult.error}` });
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+    return {
+      agent: 'Validator',
+      passed: false,
+      qualityScore: 0,
+      issues: [{severity: 'error', line: 1, message: 'Missing Gemini API Key'}],
+      checks: { syntax: false, qualityThreshold: false },
+      message: 'Failed to run validator due to missing API key.'
+    };
   }
-  issues.push(...antiPatternIssues);
 
-  return {
-    agent: 'Validator',
-    passed,
-    qualityScore,
-    issues,
-    checks: {
-      syntax: syntaxResult.passed,
-      antiPatterns: antiPatternIssues.filter(i => i.severity === 'error').length === 0,
-      qualityThreshold: qualityScore >= 60,
-    },
-    message: passed
-      ? `Validation passed with quality score ${qualityScore}/100. ${issues.length} minor notice(s).`
-      : `Validation failed — quality score ${qualityScore}/100. ${issues.length} issue(s) require fixing.`,
-  };
+  try {
+    const ai = new GoogleGenAI({});
+    const prompt = `You are an expert polyglot code reviewer. Analyze the following code for syntax errors, logical bugs, and anti-patterns.
+Determine the language automatically.
+Return your analysis ONLY as a valid JSON object matching this schema exactly:
+{
+  "issues": [
+    { "severity": "error" or "warning" or "info", "line": <number>, "message": "<description>" }
+  ]
+}
+If the code is perfectly fine and has no issues, return: { "issues": [] }
+Never return markdown besides the JSON block.
+
+Code:
+\`\`\`
+${code}
+\`\`\``;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    
+    const parsed = extractJson(response.text);
+    const issues = parsed.issues || [];
+    
+    const hasSyntaxError = issues.some(i => i.severity === 'error');
+    const qualityScore = computeQualityScore(issues);
+    const passed = !hasSyntaxError && qualityScore >= 60;
+
+    return {
+      agent: 'Validator',
+      passed,
+      qualityScore,
+      issues,
+      checks: {
+        syntax: !hasSyntaxError,
+        qualityThreshold: qualityScore >= 60,
+      },
+      message: passed
+        ? `Validation passed with score ${qualityScore}/100. ${issues.length} minor notice(s).`
+        : `Validation failed — quality score ${qualityScore}/100. ${issues.length} issue(s) found.`,
+    };
+  } catch (error) {
+    throw new Error(`Gemini Validator API Error: ${error.message}`);
+  }
 }
 
 module.exports = { run };

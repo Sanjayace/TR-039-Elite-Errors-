@@ -1,68 +1,16 @@
 /**
  * Debugger Agent
- * Receives code + validation issues and applies targeted fixes.
- * Iterates up to MAX_ITERATIONS times or until validation passes.
+ * Uses Gemini API to universally fix code across any language based on validator issues.
  */
+const { GoogleGenAI } = require('@google/genai');
 
 const MAX_ITERATIONS = 3;
 
-function applyFixes(code, issues) {
-  let fixed = code;
-  const appliedFixes = [];
-
-  for (const issue of issues) {
-    if (issue.message.includes('var ')) {
-      fixed = fixed.replace(/\bvar\b/g, 'const');
-      appliedFixes.push('Replaced var declarations with const');
-    }
-
-    if (issue.message.includes('TODO:') && !fixed.includes('throw new Error')) {
-      // Replace TODO comment with a placeholder throw
-      fixed = fixed.replace(
-        /\/\/ TODO:.*$/gm,
-        '// Implementation added by Debugger Agent',
-      );
-      appliedFixes.push('Resolved TODO comment with implementation note');
-    }
-
-    if (issue.message.includes('error handling') && !fixed.includes('try {')) {
-      // Wrap main function body with try/catch
-      fixed = wrapWithTryCatch(fixed);
-      appliedFixes.push('Added try/catch error handling');
-    }
-
-    if (issue.message.includes('eval()')) {
-      fixed = fixed.replace(/eval\s*\([^)]*\)/g, 'JSON.parse(JSON.stringify(input))');
-      appliedFixes.push('Replaced unsafe eval() with JSON parse/stringify');
-    }
-  }
-
-  return { fixed, appliedFixes };
-}
-
-function wrapWithTryCatch(code) {
-  // Find the first function body and add try/catch around it
-  const funcMatch = code.match(/function\s+\w+\s*\([^)]*\)\s*\{/);
-  if (!funcMatch) return code;
-
-  const insertPos = code.indexOf(funcMatch[0]) + funcMatch[0].length;
-  const before = code.slice(0, insertPos);
-  const after = code.slice(insertPos);
-
-  // Find the closing brace of the function by tracking depth
-  let depth = 1;
-  let i = 0;
-  while (i < after.length && depth > 0) {
-    if (after[i] === '{') depth++;
-    if (after[i] === '}') depth--;
-    i++;
-  }
-
-  const funcBody = after.slice(0, i - 1).trim();
-  const rest = after.slice(i - 1);
-
-  const wrapped = `\n  try {\n    ${funcBody.split('\n').join('\n    ')}\n  } catch (err) {\n    throw new Error(\`Execution error: \${err.message}\`);\n  }`;
-  return before + wrapped + rest;
+function extractCode(text) {
+  if (!text) return '';
+  const codeBlockMatch = text.match(/```(?:\w*)\n([\s\S]*?)```/);
+  if (codeBlockMatch) return codeBlockMatch[1].trim();
+  return text.trim();
 }
 
 async function run(code, issues, iteration = 1) {
@@ -77,8 +25,6 @@ async function run(code, issues, iteration = 1) {
     };
   }
 
-  await new Promise(r => setTimeout(r, 700 + Math.random() * 600));
-
   const actionableIssues = issues.filter(i => i.severity === 'error' || i.severity === 'warning');
 
   if (actionableIssues.length === 0) {
@@ -92,17 +38,47 @@ async function run(code, issues, iteration = 1) {
     };
   }
 
-  const { fixed, appliedFixes } = applyFixes(code, actionableIssues);
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+    throw new Error('Missing Gemini API Key in .env file.');
+  }
 
-  return {
-    agent: 'Debugger',
-    code: fixed,
-    originalCode: code,
-    appliedFixes,
-    iteration,
-    message: `Iteration ${iteration}: Applied ${appliedFixes.length} fix(es) — ${appliedFixes.join(', ')}.`,
-    exhausted: false,
-  };
+  try {
+    const ai = new GoogleGenAI({});
+    const issuesText = actionableIssues.map(i => `- Line ${i.line}: ${i.message}`).join('\n');
+    
+    const prompt = `You are an expert polyglot code debugger.
+Fix the following code which has issues. Maintain the exact same programming language as the original code.
+Return ONLY the corrected code inside a markdown code block (e.g. \`\`\`python).
+Do not include any explanations.
+
+Issues found:
+${issuesText}
+
+Original Code:
+\`\`\`
+${code}
+\`\`\``;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    
+    const fixedCode = extractCode(response.text);
+
+    return {
+      agent: 'Debugger',
+      code: fixedCode,
+      originalCode: code,
+      appliedFixes: actionableIssues.map(i => `Fixed: ${i.message}`),
+      iteration,
+      message: `Iteration ${iteration}: Gemini applied fixes for ${actionableIssues.length} issues in the detected language.`,
+      exhausted: false,
+    };
+  } catch (error) {
+    throw new Error(`Gemini Debugger API Error: ${error.message}`);
+  }
 }
 
 module.exports = { run, MAX_ITERATIONS };
