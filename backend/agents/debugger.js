@@ -44,7 +44,7 @@ async function run(code, issues, iteration = 1) {
   }
 
   try {
-    const ai = new GoogleGenAI({});
+    const ai = new GoogleGenAI({ apiKey: apiKey });
     const issuesText = actionableIssues.map(i => `- Line ${i.line}: ${i.message}`).join('\n');
     
     const prompt = `You are an expert polyglot code debugger.

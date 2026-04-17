@@ -26,7 +26,7 @@ async function run(problem) {
   }
 
   try {
-    const ai = new GoogleGenAI({});
+    const ai = new GoogleGenAI({ apiKey: apiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: `You are an expert polyglot developer. Write or fix the code for the following request in the most appropriate programming language, or the language explicitly requested by the user. Return ONLY the code inside a markdown block with the correct language tag (e.g. \`\`\`python). Do not include any explanations. Request: \n${problem}`,

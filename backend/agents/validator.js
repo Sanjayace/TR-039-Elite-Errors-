@@ -42,7 +42,7 @@ async function run(code) {
   }
 
   try {
-    const ai = new GoogleGenAI({});
+    const ai = new GoogleGenAI({ apiKey: apiKey });
     const prompt = `You are an expert polyglot code reviewer. Analyze the following code for syntax errors, logical bugs, and anti-patterns.
 Determine the language automatically.
 Return your analysis ONLY as a valid JSON object matching this schema exactly:
